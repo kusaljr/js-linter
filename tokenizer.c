@@ -4,6 +4,7 @@
 
 #define MAX_TOKEN_LEN 100
 #define MAX_VARS 100
+#define MAX_WARNINGS 100
 
 typedef enum
 {
@@ -21,6 +22,8 @@ typedef struct
 {
     char name[MAX_TOKEN_LEN];
     int used;
+    int line_number;
+    int column_number;
 } Variable;
 
 Variable variables[MAX_VARS];
@@ -31,6 +34,13 @@ typedef struct
     const char *op;
     int len;
 } Operator;
+
+typedef struct
+{
+    char message[MAX_TOKEN_LEN];
+} Warning;
+
+Warning warnings[MAX_WARNINGS];
 
 const Operator operators[] = {
     {"===", 3}, {"!==", 3}, {"==", 2}, {"!=", 2}, {"<=", 2}, {">=", 2}, {"+=", 2}, {"-=", 2}, {"*=", 2}, {"/=", 2}, {"++", 2}, {"--", 2}, {"&&", 2}, {"||", 2}, {"=>", 2}};
@@ -43,12 +53,26 @@ const char *keywords[] = {
 
 const char delimiters[] = "[]{}(),;";
 
-void declare_variable(const char *name)
+int total_lines = 0;
+int warnings_count = 0;
+
+void add_warning(const char *message)
+{
+    if (warnings_count < MAX_WARNINGS)
+    {
+        strcpy(warnings[warnings_count].message, message);
+        warnings_count++;
+    }
+}
+
+void declare_variable(const char *name, int line, int column)
 {
     if (variables_count < MAX_VARS)
     {
         strcpy(variables[variables_count].name, name);
         variables[variables_count].used = 0;
+        variables[variables_count].line_number = line;
+        variables[variables_count].column_number = column;
         variables_count++;
     }
 }
@@ -165,6 +189,10 @@ void tokenize(FILE *file)
 
     while ((ch = fgetc(file)) != EOF)
     {
+        if (ch == '\n')
+        {
+            total_lines++;
+        }
         if (isalpha(ch) || ch == '_')
         {
             token_index = 0;
@@ -193,7 +221,7 @@ void tokenize(FILE *file)
                         ch = fgetc(file);
                     }
                     token[token_index] = '\0';
-                    declare_variable(token);
+                    declare_variable(token, total_lines, ftell(file));
                     ungetc(ch, file);
                 }
             }
@@ -323,5 +351,69 @@ int main(int argc, char *argv[])
             printf("[WARNING] Unused variable: %s\n", variables[i].name);
         }
     }
+    // generate a json file with statistics
+    FILE *json_file = fopen("stats.json", "w");
+    if (!json_file)
+    {
+        perror("Error opening file");
+        return 1;
+    }
+
+    fprintf(json_file, "{\n");
+    fprintf(json_file, "  \"variables\": [\n");
+    for (int i = 0; i < variables_count; i++)
+    {
+        fprintf(json_file, "    {\"name\": \"%s\", \"used\": %d}%s\n",
+                variables[i].name,
+                variables[i].used,
+                (i < variables_count - 1) ? "," : "");
+    }
+    fprintf(json_file, "  ],\n"); // Close variables array
+
+    fprintf(json_file, "  \"total_lines\": %d,\n", total_lines);
+    fprintf(json_file, "  \"warnings\": [\n");
+
+    int warnings_printed = 0;
+    // Print regular warnings
+    for (int i = 0; i < warnings_count; i++)
+    {
+        fprintf(json_file, "    {\"message\": \"%s\"}", warnings[i].message);
+        warnings_printed++;
+
+        // Count unused variables to determine if we need a comma
+        int unused_vars = 0;
+        for (int j = 0; j < variables_count; j++)
+        {
+            if (!variables[j].used)
+                unused_vars++;
+        }
+
+        if (i < warnings_count - 1 || unused_vars > 0)
+        {
+            fprintf(json_file, ",");
+        }
+        fprintf(json_file, "\n");
+    }
+
+    // Print unused variable warnings
+    for (int i = 0; i < variables_count; i++)
+    {
+        if (!variables[i].used)
+        {
+            fprintf(json_file, "    {\"message\": \"Unused variable: %s\", "
+                               "\"location\": {\"line\": %d, \"column\": %d}}%s\n",
+                    variables[i].name,
+                    variables[i].line_number,
+                    variables[i].column_number,
+                    (i < variables_count - 1 && !variables[i + 1].used) ? "," : "");
+        }
+    }
+
+    fprintf(json_file, "  ]\n"); // Close warnings array
+    fprintf(json_file, "}\n");   // Close main object
+
+    fclose(json_file);
+    return 0;
+
     return 0;
 }
